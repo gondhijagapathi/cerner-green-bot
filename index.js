@@ -60,6 +60,7 @@ module.exports = app => {
     app.log("new push to repository",context.payload.repository.name,context.payload.pusher.name,context.payload.pusher.email)
     const diff = await getCommit(context)
     app.log("Data found = "+diff.data)
+    //return context.github.issues.create({title:"hello",body:"hello"})
   })
 
 
