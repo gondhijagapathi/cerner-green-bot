@@ -8,6 +8,9 @@
  * @param {import('probot').Context} context
  * @param {string} [method='GET']
  */
+
+const createScheduler = require('probot-scheduler')
+
 async function getCommit(context, method = 'GET') {
   if (context.event === 'push') {
     return context.github.repos.getCommit(context.repo({
@@ -25,68 +28,78 @@ async function getCommit(context, method = 'GET') {
 
 module.exports = app => {
   // Your code here
-  app.on('pull_request.opened', async context => {
-    context.log({ event: context.event, action: context.payload.action })
 
-    const params = context.issue({ body: "Thanks for Contributing to the repo we will get back to you soon!!!" });
-    // Post a comment on the issue
-    return context.github.issues.createComment(params);
+  createScheduler(app, {
+    delay: !!process.env.DISABLE_DELAY, // delay is enabled on first run
+    interval: 100000//24 * 60 * 60 * 1000 // 1 day
   })
+  
+  app.on('schedule.repository', context => {
+     //this event is triggered once every day, with a random delay
+     (async() => {
+      console.log('before start')
+    
+      const closableItems = await getClosable(context,"pulls")
+      //console.log(closableItems.data.items)
+      
+      console.log('after start')
 
-  app.on('pull_request.closed', async context => {
-    context.log({ event: context.event, action: context.payload.action })
+      for(let item of closableItems.data.items){
+      console.log("pull details")
+      pullData= await context.github.pullRequests.get({owner:context.payload.repository.owner.login,repo:context.payload.repository.name,number:item.number})
 
-    if (context.payload.pull_request.merged) {
-      const owner = context.payload.repository.owner.login
-      const repo = context.payload.repository.name
-      const branchName = context.payload.pull_request.head.ref
-      const ref = `heads/${branchName}`
-      context.log.info(`PR was closed but not merged. Keeping ${owner}/${repo}/${ref}`)
-      try {
-        await context.github.gitdata.deleteReference({ owner, repo, ref })
-        context.log.info(`Successfully deleted ${owner}/${repo}/${ref}`)
-      } catch (e) {
-        context.log.warn(e, `Failed to delete ${owner}/${repo}/${ref}`)
+      console.log(pullData.data.head.ref)
+      await context.github.repos.getBranch({ owner:context.payload.repository.owner.login,
+         repo:context.payload.repository.name, branch:pullData.data.head.ref })
+         .then(response => context.github.issues.createComment({owner:context.payload.repository.owner.login,
+          repo:context.payload.repository.name,body:pullData.data.head.ref+" branch is older then 30 days please delete",
+        number:item.number}))
+         .catch(error => context.log(error.message))
       }
+    })();
+    
+  })
 
-      const params = context.issue({ body: "PR succesfully closed and branch deleted" });
-      // Post a comment on the issue
-      return context.github.issues.createComment(params);
-    }else{
-      const params = context.issue({ body: "PR succesfully closed" });
-      // Post a comment on the issue
-      return context.github.issues.createComment(params);
+  async function getClosable (context,type){
+    //const staleLabel = "bug"
+    const queryTypeRestriction = getQueryTypeRestriction(type)
+    //const query = `label:"${staleLabel}" ${queryTypeRestriction}`
+    const query = `${queryTypeRestriction}`
+    const days = 1
+    return search(context,type, days, query)
+  }
+  
+  function getQueryTypeRestriction (type) {
+    if (type === 'pulls') {
+      return 'is:pr'
+    } else if (type === 'issues') {
+      return 'is:issue'
     }
-  })
-
-  app.on('issues.opened', async context => {
-    context.log({ event: context.event, action: context.payload.action })
-
-    const params = context.issue({ body: "Thanks for the issue we will get back to you soon!!!" + context.payload.sender.login });
-    // Post a comment on the issue
-    //return context.github.issues.createComment(params);
-    return context.github.issues.createComment(params)
-  })
-
-
-  app.on('push', async context => {
-    context.log({ event: context.event, action: context.payload.action })
-    app.log("new push to repository", context.payload.repository.name, context.payload.pusher.name, context.payload.pusher.email)
-    const diff = await getCommit(context)
-    app.log("Data found = " + diff.data)
-    //return context.github.issues.create({title:"hello",body:"hello"})
-  })
-
-
-  app.on('*', async context => {
-    context.log({ event: context.event, action: context.payload.action })
-  })
-
-  // For more information on building apps:
-  // https://probot.github.io/docs/
-
-  // To get your app running against GitHub, see:
-  // https://probot.github.io/docs/development/
+    throw new Error(`Unknown type: ${type}. Valid types are 'pulls' and 'issues'`)
+  }
+  function since (days) {
+    const ttl = days * 24 * 60 * 60 * 1000
+    let date = new Date(new Date() - ttl)
+  
+    // GitHub won't allow it
+    if (date < new Date(0)) {
+      date = new Date(0)
+    }
+    return date
+  }
+  function search (context,type, days, query) {
+    //const { owner, repo } = this.config
+    owner=context.payload.repository.owner.login
+    repo=context.payload.repository.name
+    const timestamp = since(days).toISOString().replace(/\.\d{3}\w$/, '')
+  
+    query = `repo:${owner}/${repo} is:merged ${query}`
+  
+    const params = { q: query, sort: 'updated', order: 'desc', per_page: 30 }
+  
+    //this.logger.info(params, 'searching %s/%s for stale issues', "gondhijagapathi", "dummytest") updated:<=${timestamp}
+    return context.github.search.issues(params)
+  }
 }
 
 
